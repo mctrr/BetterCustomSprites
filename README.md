@@ -1,52 +1,72 @@
-Elin plugins for funzie
+# Better Custom Sprites
 
-## Releases
-- [Animated Custom Sprites](./AnimatedCustomSprites/) ![](https://github.com/gottyduke/Elin.Plugins/actions/workflows/acs_ci.yml/badge.svg)
-- [Visual PCC Picker](./CharacterCustomizerPlus/)
-- [Custom Whatever Loader](./CustomWhateverLoader/) ![](https://github.com/gottyduke/Elin.Plugins/actions/workflows/cwl_ci.yml/badge.svg)
-- [Elin Rich Presence](./ElinRichPresence/)
-- [Elin Together](./ElinTogether/) ![](https://github.com/gottyduke/Elin.Plugins/actions/workflows/emp_ci.yml/badge.svg)
-- [Elin with AI](./Emmersive/) ![](https://github.com/gottyduke/Elin.Plugins/actions/workflows/emmersive_ci.yml/badge.svg)
-- [Compare Equipment](./EquipmentComparison/)
-- [Expanded Moongate Server](./ExpandedMoongate/) ![](https://github.com/gottyduke/Elin.Plugins/actions/workflows/exmoongate_ci.yml/badge.svg)
-- [Fixed Package Loader](./FixedPackageLoader/)
-- [Lose Karma On Caught](./KarmaOnCaught/)
-- [Mod Viewer Plus](./ModViewerPlus/)
-- [Variable Sprite Support](./VariableSpriteSupport/)
+为 [Elin](https://store.steampowered.com/app/2135150/Elin/) 游戏中的 **Animated Custom Sprites** mod 增强版，新增角色状态感知的动画切换功能。
 
-## Build
+> 基于 [gottyduke/Elin.Plugins](https://github.com/gottyduke/Elin.Plugins) 中的 AnimatedCustomSprites 修改，遵循 MIT 协议。
 
-### Requirements
-[![.NET SDK 10.0.x](https://img.shields.io/badge/10-green?logoColor=blue&label=dotnet%20SDK&labelColor=blue)](https://dotnet.microsoft.com/en-us/download/dotnet/10.0)
+## ✨ 新增功能
 
-The projects require environment variable `ElinGamePath` set to the root folder of the Elin game installation.
+在原版 ACS 的基础上，扩展了状态前缀（prefix）判断逻辑，使角色能根据当前状态自动切换不同的动画表现：
+
+| 前缀 | 触发条件 | 示例文件名 |
+|------|---------|-----------|
+| `acs_override` | 通过 `mapStr` 手动指定 | — |
+| `snow` | 站在雪地上（原版支持） | `chara_snow.idle.0.png` |
+| `wet` | 角色潮湿 / 曾在水中 | `chara_wet.idle.0.png` |
+| `drunk` | 醉酒状态 | `chara_drunk.idle.0.png` |
+| `confused` | 混乱状态 | `chara_confused.idle.0.png` |
+| `blind` | 失明状态 | `chara_blind.idle.0.png` |
+
+状态与战斗/待机状态可组合使用，例如：
+- `chara_wet.combat.0.png` — 湿漉漉的战斗姿态
+- `chara_drunk.idle.0.png` — 醉醺醺的待机动作
+
+### 优先级
+
+当一个角色同时满足多个状态时，按以下优先级返回（靠前的优先）：
+
+```
+acs_override > snow > wet > drunk > confused > blind
+```
+
+## 🔧 构建
+
+### 环境要求
+
+- [.NET SDK 10.0.x](https://dotnet.microsoft.com/en-us/download/dotnet/10.0)
+- 环境变量 `ElinGamePath` 指向 Elin 游戏根目录，例如：
+  ```
+  E:\SteamLibrary\steamapps\common\Elin
+  ```
+
+游戏目录结构需包含：
 ```
 ElinGamePath/
 ├─ BepInEx/
-│  ├─ core/
-│  │  ├─ *.dll
+│  ├─ core/        (*.dll)
 ├─ Elin_Data/
-│  ├─ Managed/
-│  │  ├─ *.dll
+│  ├─ Managed/     (*.dll)
 ```
 
-### DotNet Build
-Clone the project:
-```ps
-git clone https://github.com/gottyduke/Elin.Plugins.git
-cd Elin.Plugins
+### 编译
+
+```powershell
+dotnet restore
+dotnet build src/AnimatedCustomSprites.csproj -c Release
 ```
 
-Install the deps:
-```ps
-dotnet restore ./CustomWhateverLoader --locked-mode
+构建产物输出到 `Package/Mod_AnimatedCustomSprites/`。
+
+## 📦 安装
+
+将构建产物（或从 Release 下载的压缩包）解压到游戏的 BepInEx 插件目录：
+
+```
+ElinGamePath/BepInEx/plugins/Mod_AnimatedCustomSprites/
 ```
 
-Build the project:
-```ps
-dotnet build ./CustomWhateverLoader -c Debug -o ./out --no-restore
-dotnet build ./CustomWhateverLoader -c DebugNightly -o ./out --no-restore
-```
+## 📄 许可证
 
----
-<p align="center">MIT License, 2024-present DK</p>
+MIT License — 2024-present DK（原作者），本衍生作品同样遵循 MIT 协议。
+
+详见 [LICENSE](./LICENSE)。
