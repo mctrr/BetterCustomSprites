@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Meta>
+  <title>Better Custom Sprites</title>
+  <id>mctrr.bettercustomsprites</id>
+  <author>mctrr</author>
+  <builtin>false</builtin>
+  <loadPriority>70</loadPriority>
+  <version>2.3.0</version>
+  <tags>Library,Sprite,Animation</tags>
+  <description>
+[h1]Better Custom Sprites[/h1]
+
+基于 [b]Animated Custom Sprites[/b]（作者 DK）的增强版，新增角色状态感知的动画自动切换功能。
+
+[b]原版 ACS 需要卸载[/b]，否则两者会冲突。
+
+[h2]新增状态[/h2]
+
+在原版 combat / idle 的基础上，mod 会根据角色当前状态自动选择动画：
+
+[list]
+[*] [b]combat[/b] - 战斗中（原版支持）
+[*] [b]wet[/b] - 潮湿 / 曾在水中
+[*] [b]drunk[/b] - 醉酒
+[*] [b]confused[/b] - 混乱
+[*] [b]blind[/b] - 失明
+[*] [b]idle[/b] - 待机（默认，无需写出）
+[/list]
+
+状态优先级从高到低：combat > wet > drunk > confused > blind > idle
+
+异常状态只在非战斗时生效，战斗中一定显示 combat 动画。
+
+[h2]命名格式[/h2]
+
+[code]
+_acs_{前缀}.{状态}#{帧间隔ms}_{起始帧}-{结束帧}
+[/code]
+
+- [b]前缀[/b]（可选）：acs_override（手动）/ snow（雪地）
+- [b]状态[/b]：combat / wet / drunk / confused / blind / idle（idle 无需写出）
+
+[h2]查找顺序[/h2]
+
+每一帧按以下顺序查找第一个存在的动画：
+
+[list]
+[*] 1. _acs_{前缀}.{状态} - 最精确
+[*] 2. _acs_{前缀} - 指定前缀的通用动画
+[*] 3. _acs_{状态} - 无前缀的指定状态
+[/list]
+
+[h2]示例[/h2]
+
+[code]
+// 基础待机动画（idle 无需写状态名）
+boxchicken_acs#66_0-5.png
+
+// 战斗动画
+boxchicken_acs_combat#66_0-5.png
+
+// 醉酒动画（非战斗时自动播放）
+boxchicken_acs_drunk#66_0-3.png
+
+// 雪地 + 醉酒组合
+boxchicken_acs_snow.drunk#66_0-3.png
+[/code]
+
+[h2]后续计划[/h2]
+
+状态判断会持续扩展，例如见面打招呼、睡眠/坐下、天气等。
+
+[h2]原版说明[/h2]
+
+基于 [url=https://github.com/gottyduke/Elin.Plugins/tree/master/AnimatedCustomSprites]Animated Custom Sprites[/url] 修改，遵循 MIT 协议。
+  </description>
+</Meta>
