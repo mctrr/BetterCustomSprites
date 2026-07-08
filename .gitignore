@@ -1,0 +1,22 @@
+# Build output
+[Bb]in/
+[Oo]bj/
+
+# Visual Studio / VS Code temp files
+.vs/
+.vscode/
+*.user
+*.suo
+*.userprefs
+*.cache
+
+# NuGet
+*.nupkg
+*.snupkg
+.project.lock.json
+
+# OS files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
