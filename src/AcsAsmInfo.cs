@@ -6,4 +6,4 @@ using ACS;
 [assembly: AssemblyInformationalVersion("2.3.0")]
 [assembly: AssemblyProduct(ModInfo.Guid)]
 [assembly: AssemblyTitle(ModInfo.Name)]
-[assembly: AssemblyMetadata("Repo", "https://github.com/gottyduke/Elin.Plugins/tree/master/AnimatedCustomSprites")]
+[assembly: AssemblyMetadata("Repo", "https://github.com/mctrr/BetterCustomSprites")]

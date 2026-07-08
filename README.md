@@ -10,16 +10,16 @@
 
 | 前缀 | 触发条件 | 示例文件名 |
 |------|---------|-----------|
-| `acs_override` | 通过 `mapStr` 手动指定 | — |
-| `snow` | 站在雪地上（原版支持） | `chara_snow.idle.0.png` |
-| `wet` | 角色潮湿 / 曾在水中 | `chara_wet.idle.0.png` |
-| `drunk` | 醉酒状态 | `chara_drunk.idle.0.png` |
-| `confused` | 混乱状态 | `chara_confused.idle.0.png` |
-| `blind` | 失明状态 | `chara_blind.idle.0.png` |
+| `acs_override` | 通过执行C#脚本`tg.mapStr.Set("acs_override", "")` （Drama）手动指定 | `chara_skin.idle#66_0-5.png` |
+| `snow` | 站在雪地上（原版支持） | `chara_acs_snow.idle#66_0-5.png` |
+| `wet` | 角色潮湿 | `chara_acs_wet.idle#66_0-5.png` |
+| `drunk` | 醉酒状态 | `chara_acs_drunk.idle#66_0-5.png` |
+| `confused` | 混乱状态 | `chara_acs_confused.idle#66_0-5.png` |
+| `blind` | 失明状态 | `chara_acs_blind.idle#66_0-5.png` |
 
 状态与战斗/待机状态可组合使用，例如：
-- `chara_wet.combat.0.png` — 湿漉漉的战斗姿态
-- `chara_drunk.idle.0.png` — 醉醺醺的待机动作
+- `chara_acs_wet.combat#66_0-5.png` — 湿漉漉的战斗姿态
+- `chara_acs_drunk.idle#66_0-5.png` — 醉醺醺的待机动作
 
 ### 优先级
 
@@ -52,17 +52,17 @@ ElinGamePath/
 
 ```powershell
 dotnet restore
-dotnet build src/AnimatedCustomSprites.csproj -c Release
+dotnet build src/BetterCustomSprites.csproj -c Release
 ```
 
-构建产物输出到 `Package/Mod_AnimatedCustomSprites/`。
+构建产物输出到 `Package/Mod_BetterCustomSprites/`。
 
 ## 📦 安装
 
 将构建产物（或从 Release 下载的压缩包）解压到游戏的 BepInEx 插件目录：
 
 ```
-ElinGamePath/BepInEx/plugins/Mod_AnimatedCustomSprites/
+ElinGamePath/BepInEx/plugins/Mod_BetterCustomSprites/
 ```
 
 ## 📄 许可证

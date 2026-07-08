@@ -7,8 +7,8 @@ namespace ACS;
 
 internal static class ModInfo
 {
-    internal const string Guid = "dk.elinplugins.animatedcustomsprites";
-    internal const string Name = "Animated Custom Sprites";
+    internal const string Guid = "mctrr.bettercustomsprites";
+    internal const string Name = "Better Custom Sprites";
     internal const string Version = "2.3.0";
 }
 
