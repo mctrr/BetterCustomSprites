@@ -40,6 +40,13 @@ internal class RenderFramePatch
         if (owner is Chara chara) {
             var data = chara.GetAcsClip(null, p.snow);
             if (data is not null) {
+                // greet 动画播完一轮后自动停止
+                if (AcsStateResolver.IsGreetActive(chara) && data.frame > 0) {
+                    var spriteIndex = (int)AccessTools.Field(typeof(CardActor), "spriteIndex").GetValue(actor);
+                    if (spriteIndex >= data.frame - 1) {
+                        AcsStateResolver.StopGreet(chara);
+                    }
+                }
                 return data;
             }
         }
