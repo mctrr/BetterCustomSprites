@@ -1,7 +1,11 @@
 namespace ACS.API;
 
+using UnityEngine;
+
 public static class AcsStateResolver
 {
+    // greet 触发后延迟 0.5 秒才真正激活，避免动画立刻播放
+    private const float GreetDelay = 0.2f;
     /// <summary>
     /// 获取角色的基础状态
     /// 优先级：战斗 > greet > 异常状态 > 待机
@@ -54,24 +58,39 @@ public static class AcsStateResolver
         if (snow) {
             return "snow";
         }
-
+         // 3. 结婚状态（已婚角色在雪地时的特殊外观）
+        if (chara.IsMarried) {
+            return "married";
+        }
         return null;
     }
 
     /// <summary>
     /// 检查角色是否处于问候状态
+    /// acs_greet 的值是激活时间戳（Time.realtimeSinceStartup），
+    /// 当前时间 >= 激活时间才算真正激活，从而实现延迟效果
     /// </summary>
     public static bool IsGreetActive(Chara chara)
     {
-        return chara.mapStr.ContainsKey("acs_greet");
+        if (!chara.mapStr.TryGetValue("acs_greet", out string value)) {
+            return false;
+        }
+
+        if (!float.TryParse(value, out float activateAt)) {
+            return false;
+        }
+
+        return Time.realtimeSinceStartup >= activateAt;
     }
 
     /// <summary>
-    /// 触发问候状态
+    /// 触发问候状态（延迟 0.1 秒后真正激活）
     /// </summary>
     public static void StartGreet(Chara chara)
     {
-        chara.mapStr.Set("acs_greet", "1");
+        chara.mapStr.Set("acs_greet", 
+        (Time.realtimeSinceStartup + GreetDelay)
+        .ToString());
     }
 
     /// <summary>

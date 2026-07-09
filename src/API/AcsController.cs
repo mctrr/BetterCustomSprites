@@ -37,7 +37,13 @@ public static class AcsController
             return baseState;
         }
 
-        // 5. 都没有，返回null（保持原样）
+        // 5. greet 状态没有对应动画时，立即清除标记，回退到 idle
+        if (state == "greet") {
+            AcsStateResolver.StopGreet(chara);
+            return GetAcsClip(chara, clipName, snow);
+        }
+
+        // 6. 都没有，返回null（保持原样）
         return null;
     }
 
