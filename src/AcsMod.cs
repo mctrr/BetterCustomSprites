@@ -3,6 +3,13 @@ using BepInEx;
 using HarmonyLib;
 using ReflexCLI;
 
+[assembly: AssemblyVersion("2.3.0.0")]
+[assembly: AssemblyFileVersion("2.3.0.0")]
+[assembly: AssemblyInformationalVersion("2.3.0")]
+[assembly: AssemblyProduct(ACS.ModInfo.Guid)]
+[assembly: AssemblyTitle(ACS.ModInfo.Name)]
+[assembly: AssemblyMetadata("Repo", "https://github.com/mctrr/BetterCustomSprites")]
+
 namespace ACS;
 
 internal static class ModInfo

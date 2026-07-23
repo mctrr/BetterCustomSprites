@@ -1,0 +1,519 @@
+using System;
+using System.IO;
+using ACS.API;
+using HarmonyLib;
+using ReflexCLI.Attributes;
+using UnityEngine;
+using UnityEngine.UI;
+
+namespace ACS.Patches;
+
+/// <summary>
+/// 主角 skin：绑定、冷启动重试、控制台命令、居民菜单入口。
+/// </summary>
+[HarmonyPatch]
+internal class PcSkinPatch
+{
+    private static int _lastListSkinsFrame = -999;
+
+    [HarmonyPostfix]
+    [HarmonyPatch(typeof(CharaRenderer), nameof(CharaRenderer.SetOwner))]
+    internal static void OnSetOwner(CharaRenderer __instance, Card c)
+    {
+        TryApplyPcSkin(__instance);
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(typeof(CharaRenderer), nameof(CharaRenderer.OnEnterScreen))]
+    internal static void OnEnterScreen(CharaRenderer __instance)
+    {
+        TryApplyPcSkin(__instance);
+    }
+
+    /// <summary>
+    /// LayerEditSkin / ACS.SetSkin 调用的是 Chara 重写，不会走到 Card 基类实现。
+    /// </summary>
+    [HarmonyPostfix]
+    [HarmonyPatch(typeof(Chara), nameof(Chara._CreateRenderer))]
+    internal static void OnCharaCreateRenderer(Chara __instance, CardRenderer __result)
+    {
+        if (__result is CharaRenderer cr) {
+            TryApplyPcSkin(cr);
+        }
+        else if (__instance.renderer is CharaRenderer cr2) {
+            TryApplyPcSkin(cr2);
+        }
+    }
+
+    internal static void TryApplyPcSkin(CharaRenderer renderer, bool forceListSkins = false)
+    {
+        if (renderer is null || renderer.pccData is null) {
+            return;
+        }
+
+        var owner = renderer.owner;
+        if (owner is null || owner.mimicry != null) {
+            return;
+        }
+
+        if (owner.c_idSpriteReplacer.IsEmpty()) {
+            return;
+        }
+
+        string rawId = owner.c_idSpriteReplacer;
+        string baseId = NormalizeSkinId(rawId);
+        if (baseId.IsEmpty()) {
+            return;
+        }
+        if (baseId != rawId) {
+            owner.c_idSpriteReplacer = baseId;
+        }
+
+        var skin = ResolveSkin(baseId);
+        if (skin is null || !HasUsableSkin(skin)) {
+            int fc = Time.frameCount;
+            if (forceListSkins || fc - _lastListSkinsFrame >= 15) {
+                _lastListSkinsFrame = fc;
+                try {
+                    SpriteReplacer.ListSkins();
+                }
+                catch (Exception) {
+                    // dict 未就绪时稍后再试
+                }
+            }
+            skin = ResolveSkin(baseId);
+        }
+        if (skin is null || !HasUsableSkin(skin)) {
+            return;
+        }
+
+        if (ReferenceEquals(owner.spriteReplacer, skin) && HasUsableSkin(skin)) {
+            return;
+        }
+
+        // 只绑 spriteReplacer，保留 pccData / PCC actor；ACS 或静态图由 PccRenderPatch 叠
+        owner.spriteReplacer = skin;
+    }
+
+    /// <summary>
+    /// pcr_xxx_acs_idle#41_0-31 → pcr_xxx；普通 id 原样返回。
+    /// </summary>
+    internal static string NormalizeSkinId(string id)
+    {
+        if (id.IsEmpty()) {
+            return id;
+        }
+
+        try {
+            if (id.IndexOfAny(new[] { '/', '\\' }) >= 0) {
+                id = Path.GetFileName(id);
+            }
+        }
+        catch (Exception) {
+            // ignore
+        }
+
+        if (id.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+            || id.EndsWith(".PNG", StringComparison.Ordinal)) {
+            id = Path.GetFileNameWithoutExtension(id);
+        }
+
+        int hash = id.IndexOf('#');
+        if (hash >= 0) {
+            id = id.Substring(0, hash);
+        }
+
+        int acsIdx = id.IndexOf("_acs_");
+        if (acsIdx > 0) {
+            id = id.Substring(0, acsIdx);
+        }
+
+        return id;
+    }
+
+    private static SpriteReplacer? ResolveSkin(string id)
+    {
+        if (id.IsEmpty()) {
+            return null;
+        }
+
+        var skin = SpriteReplacer.dictSkins.TryGetValue(id);
+        if (skin is not null) {
+            return skin;
+        }
+
+        string normalized = NormalizeSkinId(id);
+        if (normalized != id && !normalized.IsEmpty()) {
+            skin = SpriteReplacer.dictSkins.TryGetValue(normalized);
+        }
+        return skin;
+    }
+
+    /// <summary>
+    /// 动态 ACS（真实 _acs_* clip）或静态底图（data / suffixes[""]）均可。
+    /// </summary>
+    internal static bool HasUsableSkin(SpriteReplacer skin)
+    {
+        if (skin is null) {
+            return false;
+        }
+
+        if (AcsSuffixes.HasRealClip(skin)) {
+            return true;
+        }
+
+        if (skin.data is not null && !skin.data.path.IsEmpty()) {
+            return true;
+        }
+
+        if (skin.suffixes is not null
+            && skin.suffixes.TryGetValue("", out var baseData)
+            && baseData is not null
+            && !baseData.path.IsEmpty()) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>兼容旧调用；等价于 <see cref="AcsSuffixes.HasRealClip"/>。</summary>
+    internal static bool HasAcsSuffixes(SpriteReplacer skin)
+        => AcsSuffixes.HasRealClip(skin);
+
+    /// <summary>
+    /// 静态底图 SpriteData（无 ACS 时用）。
+    /// </summary>
+    internal static SpriteData? GetStaticSkinData(SpriteReplacer? skin)
+    {
+        if (skin is null) {
+            return null;
+        }
+
+        if (skin.data is not null && !skin.data.path.IsEmpty()) {
+            return skin.data;
+        }
+
+        if (skin.suffixes is not null
+            && skin.suffixes.TryGetValue("", out var baseData)
+            && baseData is not null) {
+            return baseData;
+        }
+
+        return null;
+    }
+}
+
+/// <summary>
+/// PC skin 就绪的统一入口：ListSkins / 冷启动 / 渲染重绑 都走这里。
+/// </summary>
+internal static class PcSkinBinder
+{
+    private static int _ensureUntilFrame = -1;
+    private const int EnsureFrames = 90;
+
+    internal static void Schedule(string reason)
+    {
+        _ensureUntilFrame = Time.frameCount + EnsureFrames;
+        Ensure(reason, forceListSkins: true);
+    }
+
+    /// <summary>
+    /// 尝试 ListSkins（可选）+ 绑定 PC spriteReplacer。
+    /// 成功则停止冷启动重试窗口。
+    /// </summary>
+    internal static void Ensure(string reason, bool forceListSkins = false)
+    {
+        try {
+            var pc = EClass.pc;
+            if (pc is null || pc.c_idSpriteReplacer.IsEmpty()) {
+                return;
+            }
+
+            if (forceListSkins) {
+                try {
+                    SpriteReplacer.ListSkins();
+                }
+                catch (Exception ex) {
+                    AcsMod.Warn($"ListSkins during ensure ({reason}): {ex.Message}");
+                }
+            }
+
+            if (pc.renderer is CharaRenderer cr) {
+                PcSkinPatch.TryApplyPcSkin(cr, forceListSkins: forceListSkins);
+            }
+
+            bool ok = pc.spriteReplacer is not null && PcSkinPatch.HasUsableSkin(pc.spriteReplacer);
+            if (ok) {
+                int clipCount = AcsSuffixes.CountClips(pc.spriteReplacer);
+                bool hasStatic = PcSkinPatch.GetStaticSkinData(pc.spriteReplacer) is not null;
+                AcsMod.Log(
+                    $"PC skin ready ({reason}): {pc.c_idSpriteReplacer} clips={clipCount} static={hasStatic}");
+                _ensureUntilFrame = -1;
+            }
+            else if (forceListSkins) {
+                string detail = "null";
+                if (pc.spriteReplacer is not null) {
+                    int keys = pc.spriteReplacer.suffixes?.Count ?? 0;
+                    detail = $"no-usable-skin (suffixKeys={keys}, data={(pc.spriteReplacer.data is null ? "null" : "set")})";
+                }
+                AcsMod.Warn(
+                    $"PC skin not ready ({reason}): id={pc.c_idSpriteReplacer}, replacer={detail}");
+            }
+        }
+        catch (Exception ex) {
+            AcsMod.Warn($"PcSkinBinder.Ensure ({reason}): {ex.Message}");
+        }
+    }
+
+    internal static void TickRetry()
+    {
+        try {
+            if (_ensureUntilFrame < 0 || Time.frameCount > _ensureUntilFrame) {
+                return;
+            }
+
+            if (Time.frameCount % 5 != 0) {
+                return;
+            }
+
+            if (EClass.pc is null || EClass.core?.IsGameStarted != true) {
+                return;
+            }
+
+            Ensure("retry", forceListSkins: Time.frameCount % 30 == 0);
+        }
+        catch (Exception) {
+            // 绝不让 postfix 拖垮 Scene.OnUpdate
+        }
+    }
+}
+
+/// <summary>
+/// 冷启动/读档后强制 ListSkins + 重绑 PC skin（ACS 或静态）。
+/// </summary>
+[HarmonyPatch]
+internal class GameStartPatch
+{
+    [HarmonyPostfix]
+    [HarmonyPatch(typeof(Game), nameof(Game.Load))]
+    internal static void OnGameLoad()
+    {
+        PcSkinBinder.Schedule("Game.Load");
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(typeof(Scene), nameof(Scene.Init))]
+    internal static void OnSceneInit(Scene.Mode newMode)
+    {
+        if (newMode is Scene.Mode.StartGame or Scene.Mode.Zone) {
+            PcSkinBinder.Schedule($"Scene.Init({newMode})");
+        }
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(typeof(Scene), nameof(Scene.OnUpdate))]
+    internal static void OnSceneUpdate()
+    {
+        PcSkinBinder.TickRetry();
+    }
+}
+
+/// <summary>
+/// 控制台：ACS.SetSkin / ClearSkin / ListSkins。
+/// </summary>
+internal static class PcSkinCommands
+{
+    [ConsoleCommand("")]
+    public static string SetSkin(string skinId)
+    {
+        var pc = EClass.pc;
+        if (pc is null) {
+            return "PC not found.";
+        }
+
+        if (skinId.IsEmpty()) {
+            return "Usage: ACS.SetSkin <skinId>";
+        }
+
+        skinId = PcSkinPatch.NormalizeSkinId(skinId);
+        SpriteReplacer.ListSkins();
+        var skin = SpriteReplacer.dictSkins.TryGetValue(skinId);
+        if (skin is null) {
+            return $"Skin '{skinId}' not found in Skin folder.";
+        }
+
+        pc.c_idSpriteReplacer = skinId;
+        pc._CreateRenderer();
+        if (pc.renderer is CharaRenderer cr) {
+            PcSkinPatch.TryApplyPcSkin(cr);
+        }
+        return $"PC skin set to '{skinId}'.";
+    }
+
+    [ConsoleCommand("")]
+    public static string ClearSkin()
+    {
+        var pc = EClass.pc;
+        if (pc is null) {
+            return "PC not found.";
+        }
+
+        pc.c_idSpriteReplacer = null;
+        pc._CreateRenderer();
+        return "PC skin cleared.";
+    }
+
+    [ConsoleCommand("")]
+    public static string ListSkins()
+    {
+        SpriteReplacer.ListSkins();
+        var skins = SpriteReplacer.dictSkins;
+        if (skins.Count == 0) {
+            return "No skins found in Skin folder.";
+        }
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine($"Found {skins.Count} skin(s):");
+        foreach (var entry in skins) {
+            int acsCount = AcsSuffixes.CountClips(entry.Value);
+            sb.AppendLine($"  {entry.Key}" + (acsCount > 0 ? $" ({acsCount} ACS clip(s))" : ""));
+        }
+        return sb.ToString();
+    }
+}
+
+/// <summary>
+/// 打开原版 <see cref="LayerEditSkin"/>（创建角色 / 居民菜单共用）。
+/// </summary>
+internal static class SkinUi
+{
+    internal static void OpenEditSkin(Chara c, Action? onKill = null)
+    {
+        if (c is null) {
+            return;
+        }
+
+        try {
+            SpriteReplacer.ListSkins();
+        }
+        catch (Exception ex) {
+            AcsMod.Warn($"ListSkins before LayerEditSkin: {ex.Message}");
+        }
+
+        var layer = EClass.ui.AddLayer<LayerEditSkin>();
+        if (onKill is not null) {
+            layer.SetOnKill(onKill);
+        }
+
+        layer.Activate(c);
+    }
+
+    /// <summary>
+    /// 选肤后重绑 ACS/静态 skin（创建阶段可能尚未 IsGameStarted）。
+    /// </summary>
+    internal static void RebindAfterSkinEdit(Chara? c)
+    {
+        if (c is null) {
+            return;
+        }
+
+        try {
+            if (c.renderer is CharaRenderer cr) {
+                PcSkinPatch.TryApplyPcSkin(cr, forceListSkins: true);
+            }
+            else if (!c.c_idSpriteReplacer.IsEmpty()) {
+                c._CreateRenderer();
+                if (c.renderer is CharaRenderer cr2) {
+                    PcSkinPatch.TryApplyPcSkin(cr2, forceListSkins: true);
+                }
+            }
+        }
+        catch (Exception ex) {
+            AcsMod.Warn($"RebindAfterSkinEdit: {ex.Message}");
+        }
+    }
+}
+
+/// <summary>
+/// 创建角色面板（UICharaMaker）底部追加原版「更换贴图」按钮。
+/// Refresh 会 Clear/Build note，故在 postfix 里每次重建后注入。
+/// </summary>
+[HarmonyPatch]
+internal class CreateCharSkinPatch
+{
+    [HarmonyPostfix]
+    [HarmonyPatch(typeof(UICharaMaker), nameof(UICharaMaker.Refresh))]
+    internal static void OnRefresh(UICharaMaker __instance)
+    {
+        try {
+            if (__instance is null || __instance.note is null || __instance.chara is null) {
+                return;
+            }
+
+            if (__instance.chara.mimicry != null) {
+                return;
+            }
+
+            __instance.note.Space(8, 0);
+
+            string label = "editSkin".lang();
+            if (label.IsEmpty()) {
+                label = "editSkin";
+            }
+
+            __instance.note.AddButton(label, () =>
+            {
+                var c = __instance.chara;
+                SkinUi.OpenEditSkin(c, () => SkinUi.RebindAfterSkinEdit(c));
+            });
+
+            // Refresh 已 Build 过；追加控件后再 Build 一次以刷新布局
+            __instance.note.Build();
+        }
+        catch (Exception ex) {
+            AcsMod.Warn($"CreateCharSkinPatch.OnRefresh: {ex.Message}");
+        }
+    }
+}
+
+/// <summary>
+/// 居民列表右键菜单为 PC 追加 editSkin。
+/// </summary>
+[HarmonyPatch]
+internal class PeopleMenuPatch
+{
+    [HarmonyPostfix]
+    [HarmonyPatch(typeof(BaseListPeople), nameof(BaseListPeople.OnClick))]
+    internal static void OnClickPostfix(BaseListPeople __instance, Chara c)
+    {
+        if (c is null || c != EClass.pc) {
+            return;
+        }
+
+        if (c.mimicry != null) {
+            return;
+        }
+
+        var menu = UIContextMenu.Current;
+        if (menu is null || !menu.isActiveAndEnabled) {
+            return;
+        }
+
+        menu.AddButton("editSkin", () =>
+        {
+            SkinUi.OpenEditSkin(c, () =>
+            {
+                try {
+                    __instance.list.Refresh();
+                }
+                catch (Exception) {
+                    // ignore
+                }
+
+                SkinUi.RebindAfterSkinEdit(c);
+            });
+        });
+
+        LayoutRebuilder.ForceRebuildLayoutImmediate(menu.layoutGroup.transform as RectTransform);
+    }
+}

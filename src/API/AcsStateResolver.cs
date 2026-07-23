@@ -1,28 +1,39 @@
-namespace ACS.API;
+﻿namespace ACS.API;
 
 using UnityEngine;
 
 public static class AcsStateResolver
 {
-    // greet 触发后延迟 0.5 秒才真正激活，避免动画立刻播放
+    // greet 触发后延迟再激活，避免气泡一出就切动画
     private const float GreetDelay = 0.2f;
+
+    /// <summary>PC 手动攻击时写入的战斗粘滞标记（mapStr key）。</summary>
+    public const string CombatFlagKey = "acs_combat";
+
     /// <summary>
-    /// 获取角色的基础状态
-    /// 优先级：战斗 > greet > 异常状态 > 待机
+    /// 无明确敌对目标后，战斗粘滞最多再保持多久（秒）。
+    /// 有人把 PC 当 enemy / PC 有 enemy / GoalCombat 时不看超时。
+    /// </summary>
+    private const float CombatStickySeconds = 8f;
+
+    /// <summary>
+    /// 基础状态优先级：战斗 > 移动(仅 PC) > greet(NPC) > 异常 > idle
     /// </summary>
     public static string GetState(Chara chara)
     {
-        // 1. 战斗状态优先级最高
-        if (chara.IsInCombat) {
+        if (IsCombatVisual(chara)) {
             return "combat";
         }
 
-        // 2. 问候状态（NPC 看见玩家时触发，动画播完一轮后自动结束）
-        if (IsGreetActive(chara)) {
+        // 资源名 _acs_move；NPC 格子移动不需要 walk ACS
+        if (chara.IsPC && IsPcMoving(chara)) {
+            return "move";
+        }
+
+        if (!chara.IsPC && IsGreetActive(chara)) {
             return "greet";
         }
 
-        // 3. 异常状态（按视觉显著性排序，作为 idle 的替代状态）
         if (chara.isWet || chara.wasInWater) {
             return "wet";
         }
@@ -39,36 +50,177 @@ public static class AcsStateResolver
             return "blind";
         }
 
-        // 3. 默认待机状态
         return "idle";
     }
 
     /// <summary>
-    /// 获取角色的特殊状态前缀
-    /// 优先级：手动设置 > 雪地
+    /// 是否应播 combat ACS。
+    /// 原版 IsInCombat = ai is GoalCombat；PC 手动点怪往往不挂 GoalCombat、GoHostile 对 IsPC 不写 enemy。
+    /// 补充：combatCount、被敌对锁定、DoHostileAction 粘滞标记。
+    /// </summary>
+    public static bool IsCombatVisual(Chara chara)
+    {
+        if (chara is null) {
+            return false;
+        }
+
+        if (chara.IsInCombat) {
+            return true;
+        }
+
+        if (chara.combatCount > 0) {
+            return true;
+        }
+
+        if (HasLiveEnemy(chara)) {
+            return true;
+        }
+
+        if (IsTargetedByHostile(chara)) {
+            return true;
+        }
+
+        if (chara.IsPC && HasCombatSticky(chara)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>PC 发起/卷入敌对时调用，开启 combat ACS 粘滞。</summary>
+    public static void MarkCombat(Chara chara)
+    {
+        if (chara is null) {
+            return;
+        }
+
+        chara.mapStr.Set(CombatFlagKey, Time.realtimeSinceStartup.ToString());
+    }
+
+    /// <summary>明确脱战时清粘滞（可选）。</summary>
+    public static void ClearCombat(Chara chara)
+    {
+        chara?.mapStr.Remove(CombatFlagKey);
+    }
+
+    private static bool HasLiveEnemy(Chara chara)
+    {
+        var e = chara.enemy;
+        if (e is null) {
+            return false;
+        }
+
+        return e.IsAliveInCurrentZone && e.ExistsOnMap && !e.isDead;
+    }
+
+    private static bool IsTargetedByHostile(Chara chara)
+    {
+        try {
+            var map = EClass._map;
+            if (map?.charas is null) {
+                return false;
+            }
+
+            foreach (Chara c in map.charas) {
+                if (c is null || c == chara || c.isDead) {
+                    continue;
+                }
+
+                if (c.enemy != chara) {
+                    continue;
+                }
+
+                if (!c.IsAliveInCurrentZone || !c.ExistsOnMap) {
+                    continue;
+                }
+
+                // 友军互指不算战斗演出
+                if (chara.IsPCFactionOrMinion && c.IsPCFactionOrMinion) {
+                    continue;
+                }
+
+                return true;
+            }
+        }
+        catch {
+            // 主菜单 / 地图未就绪
+        }
+
+        return false;
+    }
+
+    private static bool HasCombatSticky(Chara chara)
+    {
+        if (!chara.mapStr.TryGetValue(CombatFlagKey, out string value)
+            || !float.TryParse(value, out float started)) {
+            return false;
+        }
+
+        float elapsed = Time.realtimeSinceStartup - started;
+        if (elapsed < 0f) {
+            ClearCombat(chara);
+            return false;
+        }
+
+        // 仍有明确敌对：保持 combat，并刷新起点避免长战中途断
+        if (HasLiveEnemy(chara) || IsTargetedByHostile(chara) || chara.IsInCombat) {
+            MarkCombat(chara);
+            return true;
+        }
+
+        if (elapsed <= CombatStickySeconds) {
+            return true;
+        }
+
+        ClearCombat(chara);
+        return false;
+    }
+
+    /// <summary>
+    /// PC 是否应播 move ACS。
+    /// 仅看 CharaRenderer.isMoving 会在格子衔接瞬间变 false，长按 WASD 会闪 idle。
+    /// 补充：GoalManualMove + EInput.axis（勿 ConvertAxis）。
+    /// </summary>
+    public static bool IsPcMoving(Chara chara)
+    {
+        if (chara.renderer is CharaRenderer cr && cr.IsMoving) {
+            return true;
+        }
+
+        if (chara.ai is GoalManualMove) {
+            return true;
+        }
+
+        // 格子衔接时 isMoving/AI 可能瞬时 false，轴仍非零则保持 move
+        if (EInput.axis != Vector2.zero) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 特殊状态前缀优先级：手动 override > 雪地 > 已婚
     /// </summary>
     public static string? GetPrefix(Chara chara, bool snow = false)
     {
-        // 1. 手动设置的acs_override优先级最高
         if (chara.mapStr.TryGetValue("acs_override", out string overrideClip)) {
             return overrideClip;
         }
 
-        // 2. 雪地（人物在雪地时的特殊外观）
         if (snow) {
             return "snow";
         }
-         // 3. 结婚状态（已婚角色在雪地时的特殊外观）
+
         if (chara.IsMarried) {
             return "married";
         }
+
         return null;
     }
 
     /// <summary>
-    /// 检查角色是否处于问候状态
-    /// acs_greet 的值是激活时间戳（Time.realtimeSinceStartup），
-    /// 当前时间 >= 激活时间才算真正激活，从而实现延迟效果
+    /// acs_greet 存激活时间戳；当前时间 >= 该值才算激活（实现 GreetDelay 延迟）。
     /// </summary>
     public static bool IsGreetActive(Chara chara)
     {
@@ -83,19 +235,14 @@ public static class AcsStateResolver
         return Time.realtimeSinceStartup >= activateAt;
     }
 
-    /// <summary>
-    /// 触发问候状态（延迟 0.1 秒后真正激活）
-    /// </summary>
+    /// <summary>触发问候（延迟 <see cref="GreetDelay"/> 秒后激活）。</summary>
     public static void StartGreet(Chara chara)
     {
-        chara.mapStr.Set("acs_greet", 
-        (Time.realtimeSinceStartup + GreetDelay)
-        .ToString());
+        chara.mapStr.Set("acs_greet",
+            (Time.realtimeSinceStartup + GreetDelay)
+            .ToString());
     }
 
-    /// <summary>
-    /// 停止问候状态
-    /// </summary>
     public static void StopGreet(Chara chara)
     {
         chara.mapStr.Remove("acs_greet");

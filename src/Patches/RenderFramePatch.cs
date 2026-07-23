@@ -1,10 +1,15 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Reflection.Emit;
 using ACS.API;
 using HarmonyLib;
 
 namespace ACS.Patches;
 
+/// <summary>
+/// 原版 CardActor.OnRender 只播放 replacer.data 的多帧动画。
+/// 本 patch 在帧推进前把 SpriteData 替换为当前 ACS clip，使 NPC/非 PCC 角色能播状态动画。
+/// 主角（PCC）由 <see cref="PccRenderPatch"/> 单独处理。
+/// </summary>
 [HarmonyPatch]
 internal class RenderFramePatch
 {
@@ -33,22 +38,33 @@ internal class RenderFramePatch
     private static SpriteData GetCurrentAnimatedData(SpriteData current, CardActor actor, RenderParam p)
     {
         var owner = actor.owner;
-        if (!owner.sourceCard.replacer.suffixes.ContainsKey(AcsController.ReservedSuffix)) {
+        if (owner is null) {
             return current;
         }
 
-        if (owner is Chara chara) {
-            var data = chara.GetAcsClip(null, p.snow);
-            if (data is not null) {
-                // greet 动画播完一轮后自动停止
-                if (AcsStateResolver.IsGreetActive(chara) && data.frame > 0) {
-                    var spriteIndex = (int)AccessTools.Field(typeof(CardActor), "spriteIndex").GetValue(actor);
-                    if (spriteIndex >= data.frame - 1) {
-                        AcsStateResolver.StopGreet(chara);
-                    }
+        // PCC 主角由 PccRenderPatch 覆盖，避免双重推进
+        if (actor is CharaActorPCC) {
+            return current;
+        }
+
+        if (owner is not Chara chara) {
+            return current;
+        }
+
+        var suffixes = AcsSuffixes.Resolve(chara);
+        if (suffixes is null) {
+            return current;
+        }
+
+        var data = chara.GetAcsClip(p.snow, suffixes);
+        if (data is not null) {
+            if (AcsStateResolver.IsGreetActive(chara) && data.frame > 0) {
+                int spriteIndex = AccessTools.FieldRefAccess<CardActor, int>("spriteIndex")(actor);
+                if (spriteIndex >= data.frame - 1) {
+                    AcsStateResolver.StopGreet(chara);
                 }
-                return data;
             }
+            return data;
         }
 
         return current;

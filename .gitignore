@@ -1,8 +1,16 @@
-# Build output
+﻿# Build output
 [Bb]in/
 [Oo]bj/
 
-# Visual Studio / VS Code temp files
+# Local research / decompile dumps / helper scripts (not mod content)
+.research/
+.tools/
+.tmp_*/
+.tmp_decomp/
+.tmp_decomp_full/
+.tmp_dump/
+
+# Visual Studio / VS Code
 .vs/
 .vscode/
 *.user
@@ -13,10 +21,16 @@
 # NuGet
 *.nupkg
 *.snupkg
-.project.lock.json
+project.lock.json
+# keep packages.lock.json for reproducible restore
 
-# OS files
+# OS
 Thumbs.db
 ehthumbs.db
 Desktop.ini
 .DS_Store
+
+# Logs / temp
+*.log
+*.tmp
+*~

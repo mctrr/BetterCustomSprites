@@ -5,7 +5,7 @@
   <author>mctrr</author>
   <builtin>false</builtin>
   <loadPriority>70</loadPriority>
-  <version>2.3.0</version>
+  <version>1.14.514</version>
   <tags>Library,Sprite,Animation</tags>
   <description>
 [h1]Better Custom Sprites[/h1]
@@ -14,12 +14,18 @@
 
 [b]原版 ACS 需要卸载[/b]，否则两者会冲突。
 
+[h2]与原版 ACS 的区别[/h2]
+
+原版 Animated Custom Sprites 只支持 [b]combat[/b] 和 [b]idle[/b] 两种状态切换。本 mod 在此基础上大幅扩展，让角色能根据更多游戏状态自动切换动画，并新增了前缀系统和问候动画。
+
 [h2]新增状态[/h2]
 
 在原版 combat / idle 的基础上，mod 会根据角色当前状态自动选择动画：
 
 [list]
 [*] [b]combat[/b] - 战斗中（原版支持）
+[*] [b]move[/b] - 仅主角移动时（资源名 _acs_move）
+[*] [b]greet[/b] - 见面问候：NPC 看见玩家时自动播放一次问候动画，播完自动回到 idle
 [*] [b]wet[/b] - 潮湿 / 曾在水中
 [*] [b]drunk[/b] - 醉酒
 [*] [b]confused[/b] - 混乱
@@ -27,9 +33,13 @@
 [*] [b]idle[/b] - 待机（默认，无需写出）
 [/list]
 
-状态优先级从高到低：combat > wet > drunk > confused > blind > idle
+状态优先级从高到低：combat > move(PC) > greet > wet > drunk > confused > blind > idle
 
 异常状态只在非战斗时生效，战斗中一定显示 combat 动画。
+
+[h2]主角动态 Skin[/h2]
+
+支持 PCC 使用 Skin 目录动态贴图；创角面板与居民菜单可打开原版换肤 UI。
 
 [h2]命名格式[/h2]
 
@@ -37,8 +47,8 @@
 _acs_{前缀}.{状态}#{帧间隔ms}_{起始帧}-{结束帧}
 [/code]
 
-- [b]前缀[/b]（可选）：acs_override（手动）/ snow（雪地）
-- [b]状态[/b]：combat / wet / drunk / confused / blind / idle（idle 无需写出）
+- [b]前缀[/b]（可选）：acs_override（手动）/ snow（雪地）/ married（已婚）
+- [b]状态[/b]：combat / move / greet / wet / drunk / confused / blind / idle（idle 无需写出）
 
 [h2]查找顺序[/h2]
 
@@ -50,25 +60,15 @@ _acs_{前缀}.{状态}#{帧间隔ms}_{起始帧}-{结束帧}
 [*] 3. _acs_{状态} - 无前缀的指定状态
 [/list]
 
-[h2]示例[/h2]
 
-[code]
-// 基础待机动画（idle 无需写状态名）
-boxchicken_acs#66_0-5.png
+[h2]greet 问候动画说明[/h2]
 
-// 战斗动画
-boxchicken_acs_combat#66_0-5.png
-
-// 醉酒动画（非战斗时自动播放）
-boxchicken_acs_drunk#66_0-3.png
-
-// 雪地 + 醉酒组合
-boxchicken_acs_snow.drunk#66_0-3.png
-[/code]
-
-[h2]后续计划[/h2]
-
-状态判断会持续扩展，例如见面打招呼、睡眠/坐下、天气等。
+[list]
+[*] 当 NPC 触发 fov 对话气泡（即看见玩家主动搭话）时，自动进入 greet 状态
+[*] greet 动画播放一轮后自动结束，回到 idle
+[*] 如果没有提供 greet 动画，mod 会自动回退到 idle，不会出错
+[*] 触发后有约 0.2 秒延迟，避免动画瞬间切换
+[/list]
 
 [h2]原版说明[/h2]
 

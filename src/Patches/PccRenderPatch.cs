@@ -1,0 +1,454 @@
+﻿using System;
+using System.Collections.Generic;
+using ACS.API;
+using HarmonyLib;
+using UnityEngine;
+
+namespace ACS.Patches;
+
+/// <summary>
+/// 为主角（PCC 系统）提供动态贴图支持。
+/// 在 CharaActorPCC.OnRender 结束后用 ACS 帧覆盖 sr.sprite；
+/// 隐藏 PCC 武器 tile overlay，但保留/重绘真实手持物，使其叠在 ACS 前面。
+/// </summary>
+[HarmonyPatch]
+internal class PccRenderPatch
+{
+    private static readonly AccessTools.FieldRef<CardActor, float> SpriteTimerRef =
+        AccessTools.FieldRefAccess<CardActor, float>("spriteTimer");
+
+    private static readonly AccessTools.FieldRef<CardActor, int> SpriteIndexRef =
+        AccessTools.FieldRefAccess<CardActor, int>("spriteIndex");
+
+    // 临时把 temp 设为 -1，跳过原版 OnRender 的主/副手绘制（含战斗武器 tile）
+    private static int _savedTempLeft;
+    private static int _savedTempRight;
+    private static bool _tempsSaved;
+
+    // 按 actor 分状态推进帧，避免多 PCC 共享 _sharedTimer 串帧
+    private static readonly Dictionary<int, FrameState> FrameByActor = new Dictionary<int, FrameState>();
+
+    // 按 actor 实例分别记左右朝向；禁止全局共享（NPC 会污染 PC 的 W/S）
+    private static readonly Dictionary<int, bool> FlipByActor = new Dictionary<int, bool>();
+
+    private static Vector3 _org;
+
+    private sealed class FrameState
+    {
+        public float Timer;
+        public int Index;
+        public int LastAdvanceFrame = -1;
+        public SpriteData? LastClip;
+    }
+
+    [HarmonyPrefix]
+    [HarmonyPatch(typeof(CharaActorPCC), nameof(CharaActorPCC.OnRender))]
+    internal static void OnPccRenderPrefix(CharaActorPCC __instance)
+    {
+        _tempsSaved = false;
+        if (!ShouldUseAcsOverlay(__instance) || __instance.pcc?.data is null) {
+            return;
+        }
+        // temp=-1：原版 switch 直接 break，不画武器 tile / 装备手持。
+        // 工具类手持由 Postfix DrawHeldInFront 在非战斗时补画。
+        _savedTempLeft = __instance.pcc.data.tempLeft;
+        _savedTempRight = __instance.pcc.data.tempRight;
+        __instance.pcc.data.tempLeft = -1;
+        __instance.pcc.data.tempRight = -1;
+        _tempsSaved = true;
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(typeof(CharaActorPCC), nameof(CharaActorPCC.OnRender))]
+    internal static void OnPccRender(CharaActorPCC __instance, RenderParam p)
+    {
+        if (_tempsSaved && __instance.pcc?.data != null) {
+            __instance.pcc.data.tempLeft = _savedTempLeft;
+            __instance.pcc.data.tempRight = _savedTempRight;
+            _tempsSaved = false;
+        }
+
+        if (!TryGetAcs(out var owner, out var data, __instance, p.snow)) {
+            return;
+        }
+
+        // 记录手持绘制原点（与原版 OnRender 一致），供 ACS 后重绘手持物
+        _org.x = p.x;
+        _org.y = p.y;
+        _org.z = p.z + owner.renderer.data.offset.z;
+
+        // 静态单帧 skin 不推进动画计时
+        if (data.frame > 1) {
+            AdvanceFrame(__instance, data, owner);
+        }
+        else {
+            SpriteTimerRef(__instance) = 0f;
+            SpriteIndexRef(__instance) = 0;
+        }
+        ApplyAcsSprite(__instance, data, p);
+        // ACS 身体是 SpriteRenderer，可能盖住 mesh 手持物；在 ACS 之后再画一次手持
+        DrawHeldInFront(__instance, p, owner);
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(typeof(CharaActorPCC), nameof(CharaActorPCC.NextDir))]
+    internal static void OnNextDir(CharaActorPCC __instance)
+    {
+        if (!TryGetAcs(out _, out var data, __instance, snow: false)) {
+            return;
+        }
+        ApplyAcsSprite(__instance, data, null);
+    }
+
+    [HarmonyPostfix]
+    [HarmonyPatch(typeof(CharaActorPCC), nameof(CharaActorPCC.RefreshSprite))]
+    internal static void OnRefreshSprite(CharaActorPCC __instance)
+    {
+        if (!TryGetAcs(out _, out var data, __instance, snow: false)) {
+            return;
+        }
+        ApplyAcsSprite(__instance, data, null);
+    }
+
+    private static bool ShouldUseAcsOverlay(CharaActorPCC __instance)
+    {
+        if (__instance.pcc?.data is null || __instance.pcc.data.isUnique) {
+            return false;
+        }
+        var owner = __instance.owner;
+        if (owner is null || owner.mimicry != null) {
+            return false;
+        }
+        // ACS 动态 clip 或静态 Package Skin 均可叠在 PCC 上
+        return AcsSuffixes.Resolve(owner) is not null
+            || PcSkinPatch.GetStaticSkinData(owner.spriteReplacer) is not null;
+    }
+
+    private static bool TryGetAcs(out Chara owner, out SpriteData data, CharaActorPCC actor, bool snow)
+    {
+        owner = null!;
+        data = null!;
+        if (actor is null) {
+            return false;
+        }
+        var o = actor.owner;
+        if (o is null || o.mimicry != null) {
+            return false;
+        }
+        if (actor.pcc?.data?.isUnique == true) {
+            return false;
+        }
+
+        // 读档/冷启动：spriteReplacer 为空或尚无可用 skin 时重绑
+        if (!o.c_idSpriteReplacer.IsEmpty() && o.renderer is CharaRenderer cr
+            && (o.spriteReplacer is null
+                || (AcsSuffixes.Resolve(o) is null
+                    && PcSkinPatch.GetStaticSkinData(o.spriteReplacer) is null))) {
+            PcSkinPatch.TryApplyPcSkin(cr);
+        }
+
+        // 优先动态 ACS（多帧）；否则回退静态 Package Skin 底图
+        var suffixes = AcsSuffixes.Resolve(o);
+        if (suffixes is not null) {
+            var clip = o.GetAcsClip(snow, suffixes);
+            if (clip is not null && clip.frame > 1) {
+                owner = o;
+                data = clip;
+                return true;
+            }
+        }
+
+        var staticData = PcSkinPatch.GetStaticSkinData(o.spriteReplacer);
+        if (staticData is null) {
+            // 切勿 localScale=one：会把原版 PCC 的 source.size*SubPass 缩放打成 1
+            return false;
+        }
+
+        owner = o;
+        data = staticData;
+        return true;
+    }
+
+    private static void AdvanceFrame(CharaActorPCC __instance, SpriteData data, Chara owner)
+    {
+        int actorKey = __instance.GetInstanceID();
+        if (!FrameByActor.TryGetValue(actorKey, out var st) || st is null) {
+            st = new FrameState();
+            FrameByActor[actorKey] = st;
+        }
+
+        int fc = Time.frameCount;
+        if (st.LastAdvanceFrame != fc) {
+            st.LastAdvanceFrame = fc;
+            // clip 引用变化（idle↔move/combat…）时从第 0 帧重播
+            if (!ReferenceEquals(st.LastClip, data)) {
+                st.LastClip = data;
+                st.Timer = 0f;
+                st.Index = 0;
+            }
+            else {
+                st.Timer += Core.delta;
+                if (st.Timer >= data.time) {
+                    st.Timer -= data.time;
+                    st.Index++;
+                    if (st.Index >= data.frame) {
+                        st.Index = 0;
+                    }
+                    if (AcsStateResolver.IsGreetActive(owner) && data.frame > 0 && st.Index >= data.frame - 1) {
+                        AcsStateResolver.StopGreet(owner);
+                    }
+                }
+            }
+        }
+
+        // 防御：帧数变少时钳制（例如从 move 回 idle）
+        if (data.frame > 0 && st.Index >= data.frame) {
+            st.Index = 0;
+        }
+        SpriteTimerRef(__instance) = st.Timer;
+        SpriteIndexRef(__instance) = st.Index;
+    }
+
+    /// <summary>
+    /// 同步 angle 后按左右半球翻转。Elin 角色 shader 读 _Rect UV，不能只靠 sr.flipX。
+    /// 仅 A/D（左右）更新朝向；W/S（上下）保持上次左右朝向。
+    /// </summary>
+    private static void ApplyAcsSprite(CharaActorPCC __instance, SpriteData data, RenderParam? p)
+    {
+        try {
+            if (__instance.sr is null || __instance.mpb is null) {
+                return;
+            }
+
+            // ACS 横条：显示前校正 frame 并确保 sprites 按帧切开
+            // （避免 frame=1 时切出整条 1920 宽图，move 看起来比 idle 大很多）
+            if (!data.path.IsEmpty()
+                && data.path.IndexOf("_acs_", StringComparison.Ordinal) >= 0) {
+                SkinListPatch.EnsureAcsSprites(data);
+            }
+
+            var sprites = data.GetSprites();
+            if (sprites is null || sprites.Length == 0) {
+                return;
+            }
+
+            // GetSprites 可能又走了 Load→LoadAnimationIni；再校正一次切片
+            if (!data.path.IsEmpty()
+                && data.path.IndexOf("_acs_", StringComparison.Ordinal) >= 0
+                && (data.sprites is null
+                    || data.sprites.Length != data.frame
+                    || (data.frame > 1 && data.sprites.Length == 1))) {
+                SkinListPatch.EnsureAcsSprites(data);
+                sprites = data.sprites ?? data.GetSprites();
+                if (sprites is null || sprites.Length == 0) {
+                    return;
+                }
+            }
+
+            int idx = SpriteIndexRef(__instance);
+            if (idx < 0 || idx >= sprites.Length) {
+                idx = 0;
+            }
+            var sprite = sprites[idx];
+            if (sprite is null || sprite.texture is null) {
+                return;
+            }
+
+            Sprite? bottomSprite = AcsSpritePresenter.GetBottomPivotSprite(sprite);
+            if (bottomSprite is null || bottomSprite.texture is null) {
+                return;
+            }
+
+            // 每帧用 owner.angle 刷新 provider（WASD 改的是 angle）
+            if (__instance.provider is not null && __instance.owner is not null) {
+                __instance.provider.angle = __instance.owner.angle;
+                __instance.provider.SetDir();
+            }
+
+            bool flip = ResolveHorizontalFlip(__instance);
+
+            __instance.sr.sprite = bottomSprite;
+            __instance.sr.flipX = flip;
+            __instance.mpb.SetTexture("_MainTex", bottomSprite.texture);
+
+            if (__instance.transform is not null) {
+                // 原版 PCC OnRender: localScale = source.size * SubPassData.scale
+                // ACS 覆盖后不能硬塞 Vector3.one：会丢掉场景缩放，且忽略 SpriteData.scale。
+                // 两套约定：
+                // - ACS ApplyClipMeta 写 scale=100 → 1.0 世界倍率（/100）
+                // - 原版静态 skin 默认 scale=50 → 1.0（NPC 路径按 /50；若误用 /100 会缩成一半）
+                float m = AcsSpritePresenter.ComputeLocalScaleMultiplier(__instance.owner, data);
+                Vector3 passScale = SubPassData.Current.scale;
+                // SubPass 未就绪时退回 1，避免 0 缩放
+                if (passScale.x == 0f && passScale.y == 0f && passScale.z == 0f) {
+                    passScale = Vector3.one;
+                }
+                __instance.transform.localScale = new Vector3(
+                    passScale.x * m,
+                    passScale.y * m,
+                    passScale.z * m);
+
+                // base.OnRender 每帧重置 position；Y = PCC 浮空 + 本帧底边透明留白
+                var pos = __instance.transform.position;
+                pos.y += AcsSpritePresenter.ResolveGroundYOffset(
+                    sprite,
+                    __instance.transform.localScale.y);
+                // 略推后，让 mesh 手持物更容易画在身体前
+                pos.z += 0.01f;
+                __instance.transform.position = pos;
+            }
+
+            Texture2D tex = bottomSprite.texture;
+            Rect tr = sprite.textureRect;
+            float x0 = tr.x / (float)tex.width;
+            float x1 = tr.xMax / (float)tex.width;
+            float y0 = tr.yMin / (float)tex.height;
+            float y1 = tr.yMax / (float)tex.height;
+            // 自定义 shader 用 _Rect 采样；左右翻转必须交换 x
+            Vector4 rect = flip
+                ? new Vector4(x1, y0, x0, y1)
+                : new Vector4(x0, y0, x1, y1);
+            __instance.mpb.SetVector("_Rect", rect);
+            __instance.mpb.SetFloat("_PixelHeight", sprite.rect.height);
+            __instance.sr.SetPropertyBlock(__instance.mpb);
+        }
+        catch (NullReferenceException) {
+        }
+    }
+
+    /// <summary>
+    /// 左右朝向：
+    /// 1) PC 键控：用原始 EInput.axis.x（不要 ConvertAxis）。
+    ///    ConvertAxis 会把 W+D→(0,1)、S+A→(0,-1)，水平分量被抹掉，表现为 WS 压过 AD。
+    /// 2) 无键时用 GetDirIdx 8 扇区；纯 N/S 粘滞。
+    /// 必须按 actor 分状态，禁止全局 lastFlip。
+    /// </summary>
+    private static bool ResolveHorizontalFlip(CharaActorPCC actor)
+    {
+        int key = actor.GetInstanceID();
+        FlipByActor.TryGetValue(key, out bool lastFlip);
+
+        // PC：原始轴水平分量定左右（与键序无关；斜向只要按着 A/D 就更新）
+        if (actor.owner is { IsPC: true }) {
+            Vector2 raw = EInput.axis;
+            if (raw.sqrMagnitude > 0.0001f) {
+                // 有 A/D：立刻按水平键更新，绝不让 W/S 粘滞压过
+                if (Mathf.Abs(raw.x) > 0.01f) {
+                    lastFlip = raw.x > 0f; // +x = D/右 → flip
+                    FlipByActor[key] = lastFlip;
+                    return lastFlip;
+                }
+                // 纯 W/S：粘滞上次左右
+                return lastFlip;
+            }
+        }
+
+        float angle;
+        if (actor.provider is not null) {
+            angle = actor.provider.angle;
+        }
+        else if (actor.owner is not null) {
+            angle = actor.owner.angle;
+        }
+        else {
+            return lastFlip;
+        }
+
+        // 与 GetDirIdx 一致：((angle+22.5) 归一) / 45 → 0..7
+        angle = (angle % 360f + 360f) % 360f;
+        float sector = (angle + 22.5f) % 360f;
+        int dirIdx = (int)(sector / 45f);
+        if (dirIdx < 0) {
+            dirIdx = 0;
+        }
+        else if (dirIdx > 7) {
+            dirIdx = 7;
+        }
+
+        // 纯北/南：保持上次左右
+        if (dirIdx == 2 || dirIdx == 6) {
+            return lastFlip;
+        }
+
+        // 0=E,1=NE,7=SE → 朝右 flip；3=NW,4=W,5=SW → 朝左
+        lastFlip = dirIdx is 0 or 1 or 7;
+        FlipByActor[key] = lastFlip;
+        return lastFlip;
+    }
+
+    /// <summary>
+    /// ACS 覆盖后只重绘「工具类」手持物；装备武器（含战斗时）一律不画，
+    /// 避免盖住/干扰 _acs_combat 动态贴图。
+    /// </summary>
+    private static void DrawHeldInFront(CharaActorPCC actor, RenderParam p, Chara owner)
+    {
+        try {
+            if (actor.pcc?.data is null || actor.pcc.data.isUnique) {
+                return;
+            }
+            if (owner.IsDeadOrSleeping) {
+                return;
+            }
+            // 战斗中完全不画手持/武器，交给 combat ACS
+            if (AcsStateResolver.IsCombatVisual(owner)) {
+                return;
+            }
+            // 拿着非工具 held 时不画
+            if (owner.held != null && !(owner.held.trait.ShowAsTool && !HotItemHeld.disableTool)) {
+                return;
+            }
+
+            Cell cell = owner.Cell;
+            if (!(owner.Cell.isFloating || !cell.sourceSurface.tileType.IsDeepWater || cell.IsIceTile)) {
+                return;
+            }
+
+            // 仅工具：热键栏工具 / ShowAsTool 的 held，不画 slotMainHand 装备武器
+            Thing? thing = null;
+            if (owner.IsPC && EMono.player.currentHotItem.RenderThing != null) {
+                var rt = EMono.player.currentHotItem.RenderThing;
+                if (rt.trait.ShowAsTool && !HotItemHeld.disableTool) {
+                    thing = rt;
+                }
+            }
+            if (thing is null) {
+                return;
+            }
+
+            int num = actor.currentDir;
+            int frame = actor.provider is not null ? actor.provider.currentFrame : 0;
+            if (frame < 0 || frame >= EMono.setting.render.animeWalk.Length) {
+                frame = 0;
+            }
+
+            bool flag2 = num == 0 || num == 1;
+            if (thing.trait.InvertHeldSprite) {
+                flag2 = !flag2;
+            }
+            Vector3[] mainHandPos = EMono.setting.render.mainHandPos;
+            Vector3[] mainHand = EMono.setting.render.animeWalk[frame].mainHand;
+            SourcePref pref = thing.Pref;
+            thing.dir = flag2 ? 0 : 1;
+            thing.SetRenderParam(p);
+            p.x = _org.x + mainHandPos[num].x + mainHand[num].x + (flag2 ? 0.01f : -0.01f) * pref.equipX;
+            p.y = _org.y + mainHandPos[num].y + mainHand[num].y + 0.01f * pref.equipY;
+            p.z = _org.z - thing.renderer.data.offset.z + mainHandPos[num].z + mainHand[num].z - 0.02f;
+            if (thing.renderer.hasActor) {
+                thing.renderer.RefreshSprite();
+                if (!flag2) {
+                    p.x -= thing.renderer.data._offset.x * 2f;
+                }
+            }
+            p.v.x = p.x;
+            p.v.y = p.y;
+            p.v.z = p.z;
+            thing.renderer.Draw(p, ref p.v, drawShadow: false);
+
+            p.x = _org.x;
+            p.y = _org.y;
+            p.z = _org.z - owner.renderer.data.offset.z;
+        }
+        catch (Exception) {
+        }
+    }
+}
