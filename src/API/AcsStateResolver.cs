@@ -216,9 +216,9 @@ public static class AcsStateResolver
     /// <summary>
     /// PC 是否应播 move ACS。
     /// 仅看 CharaRenderer.isMoving 会在格子衔接瞬间变 false，长按 WASD 会闪 idle。
-    /// 点地：路径 PathReady 且未到终点时 isMoving 可能尚未置位，补未走完的 HasPath。
-    /// 勿用 DestDist：那是寻路到达容差，站着也可能 &gt; 0，会导致 idle 一直播 move。
-    /// 补充：GoalManualMove + EInput.axis（勿 ConvertAxis）。
+    /// 近点/按住：GoalManualMove；键位：EInput.axis（勿 ConvertAxis）。
+    /// 远点 AI_Goto：HasPath(state==PathReady 且 nodes≥1) 且 nodeIndex 仍有效且未到 dest。
+    /// 勿用裸 DestDist/裸 HasPath：容差与取消后残留 path 都会粘死 move。
     /// </summary>
     public static bool IsPcMoving(Chara chara)
     {
@@ -235,12 +235,19 @@ public static class AcsStateResolver
             return true;
         }
 
-        // 点地起步：仅「路径就绪且尚未到达终点」才算移动（裸 HasPath/DestDist 会粘死）
+        // 远点：仅在仍跑 AI_Goto 时认 path（Cancel 后 state/nodes 可能残留，勿裸 HasPath）
+        // nodeIndex 与 TryGoTo 一致：&lt;0 视为路径耗尽/应取消，不算移动
+        // IsDestinationReached = Distance(pos,destPoint) &lt;= destDist（点地 ctor destDist=0）
+        if (chara.ai is not AI_Goto) {
+            return false;
+        }
+
         try {
             PathProgress path = chara.path;
             if (path is not null
                 && path.HasPath
                 && path.nodes is not null
+                && path.nodeIndex >= 0
                 && path.nodeIndex < path.nodes.Count
                 && !path.IsDestinationReached(chara.pos)) {
                 return true;
