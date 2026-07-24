@@ -1,5 +1,7 @@
 ﻿namespace ACS.API;
 
+using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using UnityEngine;
 
 public static class AcsStateResolver
@@ -15,6 +17,11 @@ public static class AcsStateResolver
     /// 有人把 PC 当 enemy / PC 有 enemy / GoalCombat 时不看超时。
     /// </summary>
     private const float CombatStickySeconds = 8f;
+
+    // 全图 charas 扫描降频：同窗口内按角色缓存结果（约 6 次/秒 @60fps）
+    private const int HostileScanIntervalFrames = 10;
+    private static int _hostileCacheFrame = -999;
+    private static readonly Dictionary<int, bool> HostileTargetCache = new Dictionary<int, bool>();
 
     /// <summary>
     /// 基础状态优先级：战斗 > 移动(仅 PC) > greet(NPC) > 异常 > idle
@@ -115,6 +122,36 @@ public static class AcsStateResolver
 
     private static bool IsTargetedByHostile(Chara chara)
     {
+        if (chara is null) {
+            return false;
+        }
+
+        int key = RuntimeHelpers.GetHashCode(chara);
+        int fc = Time.frameCount;
+        bool windowFresh = (fc - _hostileCacheFrame) < HostileScanIntervalFrames;
+        if (windowFresh && HostileTargetCache.TryGetValue(key, out bool cached)) {
+            return cached;
+        }
+
+        if (!windowFresh) {
+            HostileTargetCache.Clear();
+            _hostileCacheFrame = fc;
+        }
+
+        bool hit = ScanTargetedByHostile(chara);
+        HostileTargetCache[key] = hit;
+        return hit;
+    }
+
+    /// <summary>控制台重载等：丢掉敌对扫描缓存，下次立刻全图扫。</summary>
+    public static void ClearHostileScanCache()
+    {
+        HostileTargetCache.Clear();
+        _hostileCacheFrame = -999;
+    }
+
+    private static bool ScanTargetedByHostile(Chara chara)
+    {
         try {
             var map = EClass._map;
             if (map?.charas is null) {
@@ -179,6 +216,8 @@ public static class AcsStateResolver
     /// <summary>
     /// PC 是否应播 move ACS。
     /// 仅看 CharaRenderer.isMoving 会在格子衔接瞬间变 false，长按 WASD 会闪 idle。
+    /// 点地：路径 PathReady 且未到终点时 isMoving 可能尚未置位，补未走完的 HasPath。
+    /// 勿用 DestDist：那是寻路到达容差，站着也可能 &gt; 0，会导致 idle 一直播 move。
     /// 补充：GoalManualMove + EInput.axis（勿 ConvertAxis）。
     /// </summary>
     public static bool IsPcMoving(Chara chara)
@@ -194,6 +233,21 @@ public static class AcsStateResolver
         // 格子衔接时 isMoving/AI 可能瞬时 false，轴仍非零则保持 move
         if (EInput.axis != Vector2.zero) {
             return true;
+        }
+
+        // 点地起步：仅「路径就绪且尚未到达终点」才算移动（裸 HasPath/DestDist 会粘死）
+        try {
+            PathProgress path = chara.path;
+            if (path is not null
+                && path.HasPath
+                && path.nodes is not null
+                && path.nodeIndex < path.nodes.Count
+                && !path.IsDestinationReached(chara.pos)) {
+                return true;
+            }
+        }
+        catch {
+            // 主菜单 / 地图未就绪
         }
 
         return false;

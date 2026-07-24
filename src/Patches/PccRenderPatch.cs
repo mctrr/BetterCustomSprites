@@ -33,6 +33,14 @@ internal class PccRenderPatch
 
     private static Vector3 _org;
 
+    /// <summary>控制台重载：清帧推进与朝向粘滞，避免旧 clip 索引残留。</summary>
+    internal static void ClearRuntimeCaches()
+    {
+        FrameByActor.Clear();
+        FlipByActor.Clear();
+    }
+
+
     private sealed class FrameState
     {
         public float Timer;
@@ -254,10 +262,8 @@ internal class PccRenderPatch
                 return;
             }
 
-            Sprite? bottomSprite = AcsSpritePresenter.GetBottomPivotSprite(sprite);
-            if (bottomSprite is null || bottomSprite.texture is null) {
-                return;
-            }
+            // 功能C：直接用原版中心 pivot Sprite（与 NPC / SpriteData.LoadSprites 一致）。
+            // 底轴 GetBottomPivotSprite 在去掉 Y hack 后会脚底浮空；对齐 NPC 几何优先。
 
             // 每帧用 owner.angle 刷新 provider（WASD 改的是 angle）
             if (__instance.provider is not null && __instance.owner is not null) {
@@ -267,9 +273,13 @@ internal class PccRenderPatch
 
             bool flip = ResolveHorizontalFlip(__instance);
 
-            __instance.sr.sprite = bottomSprite;
+            __instance.sr.sprite = sprite;
             __instance.sr.flipX = flip;
-            __instance.mpb.SetTexture("_MainTex", bottomSprite.texture);
+            // 功能3：显示前再确保 Point（静态 skin 可能不经 EnsureAcsSprites）
+            if (sprite.texture.filterMode != FilterMode.Point) {
+                sprite.texture.filterMode = FilterMode.Point;
+            }
+            __instance.mpb.SetTexture("_MainTex", sprite.texture);
 
             if (__instance.transform is not null) {
                 // 原版 PCC OnRender: localScale = source.size * SubPassData.scale
@@ -277,28 +287,33 @@ internal class PccRenderPatch
                 // 两套约定：
                 // - ACS ApplyClipMeta 写 scale=100 → 1.0 世界倍率（/100）
                 // - 原版静态 skin 默认 scale=50 → 1.0（NPC 路径按 /50；若误用 /100 会缩成一半）
+                // 注：曾试过乘 source.size，PC 变锐但体型过大（PCC 部件 size≠ACS 全身图），已回滚。
                 float m = AcsSpritePresenter.ComputeLocalScaleMultiplier(__instance.owner, data);
                 Vector3 passScale = SubPassData.Current.scale;
                 // SubPass 未就绪时退回 1，避免 0 缩放
                 if (passScale.x == 0f && passScale.y == 0f && passScale.z == 0f) {
                     passScale = Vector3.one;
                 }
-                __instance.transform.localScale = new Vector3(
+                Vector3 localScale = new Vector3(
                     passScale.x * m,
                     passScale.y * m,
                     passScale.z * m);
+                __instance.transform.localScale = localScale;
 
-                // base.OnRender 每帧重置 position；Y = PCC 浮空 + 本帧底边透明留白
-                var pos = __instance.transform.position;
-                pos.y += AcsSpritePresenter.ResolveGroundYOffset(
-                    sprite,
-                    __instance.transform.localScale.y);
-                // 略推后，让 mesh 手持物更容易画在身体前
-                pos.z += 0.01f;
+                // 功能E3：中心 pivot 叠在 PCC 脚底锚点 → clip 级稳定抬升（半高 − 全帧最小 pad）。
+                // 禁止按动画帧改 Y（E2 逐帧 pad 会抖）；lift 已量化到 0.01，加在原版已 snap 的 base 上。
+                // 固定下移：动态 ACS 3px；静态单帧再上 1px（2px），因 lift 按各自 pad 算，固定量需分开。
+                // 必须沿 transform.up（local Y→世界）加，不能写死 world Y：
+                // 睡觉/死亡 subDeadPCC 会旋转，站立的“半高”在躺姿下变成水平位移；
+                // 只加 world Y → 悬浮；完全不加 → 中心落在锚点，身子偏到邻格。
+                float liftY = AcsSpritePresenter.ResolveCenterPivotLiftY(data, localScale.y);
+                float yNudge = data.frame > 1 ? -0.03f : -0.02f;
+                Vector3 pos = __instance.transform.position;
+                pos += __instance.transform.up * (liftY + yNudge);
                 __instance.transform.position = pos;
             }
 
-            Texture2D tex = bottomSprite.texture;
+            Texture2D tex = sprite.texture;
             Rect tr = sprite.textureRect;
             float x0 = tr.x / (float)tex.width;
             float x1 = tr.xMax / (float)tex.width;
@@ -317,10 +332,11 @@ internal class PccRenderPatch
     }
 
     /// <summary>
-    /// 左右朝向：
-    /// 1) PC 键控：用原始 EInput.axis.x（不要 ConvertAxis）。
-    ///    ConvertAxis 会把 W+D→(0,1)、S+A→(0,-1)，水平分量被抹掉，表现为 WS 压过 AD。
-    /// 2) 无键时用 GetDirIdx 8 扇区；纯 N/S 粘滞。
+    /// 左右朝向（贴图默认朝左：flip=false 左，true 右）：
+    /// PC 键盘：只认 EInput.axis.x（勿 ConvertAxis）。A/D 更新；纯 W/S 粘滞。
+    /// PC 点地：无键时用「当前一步」格子的 map-x（movePoint / path 下一步），竖步粘滞。
+    /// PC 绝不用 angle（等距 W≈NE 会误改朝向）。
+    /// NPC：angle 8 扇区；纯 N/S 粘滞。
     /// 必须按 actor 分状态，禁止全局 lastFlip。
     /// </summary>
     private static bool ResolveHorizontalFlip(CharaActorPCC actor)
@@ -328,19 +344,26 @@ internal class PccRenderPatch
         int key = actor.GetInstanceID();
         FlipByActor.TryGetValue(key, out bool lastFlip);
 
-        // PC：原始轴水平分量定左右（与键序无关；斜向只要按着 A/D 就更新）
-        if (actor.owner is { IsPC: true }) {
+        if (actor.owner is { IsPC: true } owner) {
             Vector2 raw = EInput.axis;
-            if (raw.sqrMagnitude > 0.0001f) {
-                // 有 A/D：立刻按水平键更新，绝不让 W/S 粘滞压过
-                if (Mathf.Abs(raw.x) > 0.01f) {
-                    lastFlip = raw.x > 0f; // +x = D/右 → flip
-                    FlipByActor[key] = lastFlip;
-                    return lastFlip;
-                }
-                // 纯 W/S：粘滞上次左右
+            // 1) A/D：键盘优先，与点地无关
+            if (raw.sqrMagnitude > 0.0001f && Mathf.Abs(raw.x) > 0.01f) {
+                lastFlip = raw.x > 0f; // +x = D/右 → flip
+                FlipByActor[key] = lastFlip;
                 return lastFlip;
             }
+
+            // 2) 纯 W/S：粘滞，不走点地逻辑
+            if (raw.sqrMagnitude > 0.0001f) {
+                return lastFlip;
+            }
+
+            // 3) 无键：点地/寻路当前一步转头（迷宫拐弯随 movePoint 更新）
+            if (TryFlipFromClickStep(owner, ref lastFlip)) {
+                FlipByActor[key] = lastFlip;
+            }
+
+            return lastFlip;
         }
 
         float angle;
@@ -355,6 +378,7 @@ internal class PccRenderPatch
         }
 
         // 与 GetDirIdx 一致：((angle+22.5) 归一) / 45 → 0..7
+        // 0=E,1=NE,2=N,3=NW,4=W,5=SW,6=S,7=SE
         angle = (angle % 360f + 360f) % 360f;
         float sector = (angle + 22.5f) % 360f;
         int dirIdx = (int)(sector / 45f);
@@ -374,6 +398,98 @@ internal class PccRenderPatch
         lastFlip = dirIdx is 0 or 1 or 7;
         FlipByActor[key] = lastFlip;
         return lastFlip;
+    }
+
+    /// <summary>
+    /// 点地朝向：只看「当前这一步」的地图 Δx，不看最终终点、不用 angle。
+    /// 有水平分量则更新；纯上下步返回 false（调用方保持 lastFlip）。
+    ///
+    /// 原版点地链路（IL 已核）：
+    /// - 邻格/按住：AM_Adv → GoalManualMove，步进向量在 Player.nextMove（及 static dest）
+    /// - 远点：PressedActionMove → AI_Goto，走 owner.path.nodes[nodeIndex]（递减，非 Count-1）
+    /// - CharaRenderer.movePoint 在 UpdatePosition 起步时被 Set(pos)，与 pos 相等，不能当下一步
+    /// </summary>
+    private static bool TryFlipFromClickStep(Chara owner, ref bool lastFlip)
+    {
+        try {
+            // 1) GoalManualMove / 箭头 / 按住点地：nextMove 即本步 (map dx, dz)
+            Player? player = EClass.player;
+            if (player is not null) {
+                Vector2 nm = player.nextMove;
+                if (Mathf.Abs(nm.x) > 0.01f) {
+                    lastFlip = nm.x > 0f;
+                    return true;
+                }
+
+                // 纯竖步 nextMove：粘滞
+                if (Mathf.Abs(nm.y) > 0.01f) {
+                    return false;
+                }
+            }
+
+            // 2) GoalManualMove.dest = GetFirstStep(pos+nextMove)；nextMove 被清零的帧仍可用
+            if (owner.ai is GoalManualMove && owner.pos is not null) {
+                Point dest = GoalManualMove.dest;
+                if (dest is not null && dest.IsValid && !dest.Equals(owner.pos)) {
+                    int dxDest = dest.x - owner.pos.x;
+                    if (dxDest > 0) {
+                        lastFlip = true;
+                        return true;
+                    }
+
+                    if (dxDest < 0) {
+                        lastFlip = false;
+                        return true;
+                    }
+
+                    return false;
+                }
+            }
+
+            // 3) AI_Goto 远点：path.nodes[nodeIndex]（与 TryGoTo 一致；Count-1 只在起步碰巧相同）
+            PathProgress path = owner.path;
+            if (path is not null
+                && path.HasPath
+                && path.nodes is not null
+                && path.nodes.Count > 0
+                && owner.pos is not null
+                && !path.IsDestinationReached(owner.pos)) {
+                int idx = path.nodeIndex;
+                if (idx < 0 || idx >= path.nodes.Count) {
+                    idx = path.nodes.Count - 1;
+                }
+
+                Algorithms.PathFinderNode node = path.nodes[idx];
+                // 与 AI_Goto 相同：当前格等于节点时退一格
+                if (node.X == owner.pos.x && node.Z == owner.pos.z && idx > 0) {
+                    idx--;
+                    node = path.nodes[idx];
+                }
+
+                if (node.X == owner.pos.x && node.Z == owner.pos.z) {
+                    return false;
+                }
+
+                int dx = node.X - owner.pos.x;
+                if (dx > 0) {
+                    lastFlip = true;
+                    return true;
+                }
+
+                if (dx < 0) {
+                    lastFlip = false;
+                    return true;
+                }
+
+                // 纯竖步：粘滞
+                return false;
+            }
+
+            return false;
+        }
+        catch {
+            return false;
+        }
     }
 
     /// <summary>

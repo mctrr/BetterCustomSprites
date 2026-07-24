@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using ACS.API;
 using HarmonyLib;
+using UnityEngine;
 
 namespace ACS.Patches;
 
@@ -212,9 +213,46 @@ internal class SkinListPatch
         try {
             data.sprites = null;
             data.LoadSprites();
+            // 功能3：ACS 纹理用 Point，避免 Bilinear 软边（不改 scale/位置）
+            ApplyPointFilter(data);
         }
         catch (Exception) {
             // path 未就绪等：留给显示路径再试
+        }
+    }
+
+    /// <summary>
+    /// 像素风：ACS/静态 skin 纹理强制 Point。
+    /// 与 PCC 部件 SpriteVariation 的 Point 路径对齐；不改尺寸与 pivot。
+    /// </summary>
+    internal static void ApplyPointFilter(SpriteData data)
+    {
+        if (data is null) {
+            return;
+        }
+
+        try {
+            if (data.tex is not null && data.tex.filterMode != FilterMode.Point) {
+                data.tex.filterMode = FilterMode.Point;
+            }
+
+            var sprites = data.sprites;
+            if (sprites is null) {
+                return;
+            }
+
+            for (int i = 0; i < sprites.Length; i++) {
+                var s = sprites[i];
+                if (s is null || s.texture is null) {
+                    continue;
+                }
+
+                if (s.texture.filterMode != FilterMode.Point) {
+                    s.texture.filterMode = FilterMode.Point;
+                }
+            }
+        }
+        catch (Exception) {
         }
     }
 
@@ -228,6 +266,10 @@ internal class SkinListPatch
             return;
         }
 
+        else {
+            // 已切片：仍补一次 Point（冷启动/原版 Load 可能是 Bilinear）
+            ApplyPointFilter(data);
+        }
         var clip = ResolveClipFromPath(data);
         if (clip is not { Length: > 0 }) {
             return;

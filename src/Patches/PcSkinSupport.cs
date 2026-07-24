@@ -380,6 +380,35 @@ internal static class PcSkinCommands
         }
         return sb.ToString();
     }
+
+    /// <summary>
+    /// 换 PNG 后不重开游戏：清 lift/pad/帧缓存 → ListSkins → 重绑 PC。
+    /// 不热换 DLL；仅资源与运行时缓存。
+    /// </summary>
+    [ConsoleCommand("")]
+    public static string ReloadAcs()
+    {
+        try {
+            AcsSpritePresenter.ClearCaches();
+            PccRenderPatch.ClearRuntimeCaches();
+            AcsStateResolver.ClearHostileScanCache();
+
+            SpriteReplacer.ListSkins();
+            PcSkinBinder.Ensure("ReloadAcs", forceListSkins: false);
+
+            var pc = EClass.pc;
+            if (pc is null) {
+                return "ACS caches cleared + ListSkins done (no PC).";
+            }
+
+            int clips = AcsSuffixes.CountClips(pc.spriteReplacer);
+            bool hasStatic = PcSkinPatch.GetStaticSkinData(pc.spriteReplacer) is not null;
+            return $"ACS reloaded: id={pc.c_idSpriteReplacer} clips={clips} static={hasStatic}";
+        }
+        catch (Exception ex) {
+            return $"ReloadAcs failed: {ex.Message}";
+        }
+    }
 }
 
 /// <summary>

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using UnityEngine;
 
 namespace ACS.Patches;
@@ -11,7 +12,7 @@ namespace ACS.Patches;
 internal static class AcsSpritePresenter
 {
     // 100 ppu 下约 10 像素：PCC 站位相对地面的固定浮空补偿（与画幅无关）
-    internal const float GroundYOffset = -0.10f;
+    internal const float GroundYOffset = 0;
 
     private const float PixelsPerUnit = 100f;
     private const byte AlphaThreshold = 10;
@@ -21,6 +22,20 @@ internal static class AcsSpritePresenter
 
     // 源帧 sprite → 底边透明像素数（textureRect 底到首个不透明像素）
     private static readonly Dictionary<int, float> BottomPaddingCache = new Dictionary<int, float>();
+
+    // clip 级中心 pivot 抬升缓存：key = RuntimeHelpers.GetHashCode(data) ^ (scaleKey*397)
+    // 禁止按动画帧改 Y，否则 pad 逐帧差会抖
+    private static readonly Dictionary<int, float> CenterLiftCache = new Dictionary<int, float>();
+
+    /// <summary>
+    /// 换图 / 控制台重载：清 lift、底边 pad、bottom-pivot 缓存，避免旧 pad 错位。
+    /// </summary>
+    internal static void ClearCaches()
+    {
+        CenterLiftCache.Clear();
+        BottomPaddingCache.Clear();
+        BottomPivotCache.Clear();
+    }
 
     /// <summary>
     /// 将 SpriteData.scale 映射为 PCC 叠加用的世界倍率。
@@ -64,6 +79,83 @@ internal static class AcsSpritePresenter
         float scaleY = worldScaleY == 0f ? 1f : Mathf.Abs(worldScaleY);
         y -= (padPx / PixelsPerUnit) * scaleY;
         return y;
+    }
+
+    /// <summary>
+    /// 中心 pivot 全身 ACS 叠在 PCC 脚底锚点上时的 Y 抬升（世界单位，clip 级稳定）。
+    /// 半高把图心抬到锚点上方；减去全 clip 最小底边留白，使视觉脚底落在锚点。
+    /// 结果量化到 0.01（与原版 PCC snap 同网格），动画换帧不改 Y。
+    /// 公式：lift = quantize01(halfWorldY − minPadWorldY)（&gt;= 0）。
+    /// </summary>
+    internal static float ResolveCenterPivotLiftY(SpriteData? data, float worldScaleY)
+    {
+        if (data is null) {
+            return 0f;
+        }
+
+        float scaleY = worldScaleY == 0f ? 1f : Mathf.Abs(worldScaleY);
+        // scale 量化进 key，避免浮点噪声拆缓存
+        int scaleKey = (int)(scaleY * 1000f + 0.5f);
+        int cacheKey = RuntimeHelpers.GetHashCode(data) ^ (scaleKey * 397);
+        if (CenterLiftCache.TryGetValue(cacheKey, out float cached)) {
+            return cached;
+        }
+
+        Sprite[]? sprites = null;
+        try {
+            sprites = data.GetSprites();
+        }
+        catch (Exception) {
+            CenterLiftCache[cacheKey] = 0f;
+            return 0f;
+        }
+
+        if (sprites is null || sprites.Length == 0) {
+            CenterLiftCache[cacheKey] = 0f;
+            return 0f;
+        }
+
+        float halfLocal = 0f;
+        float minPadPx = float.MaxValue;
+        bool any = false;
+        for (int i = 0; i < sprites.Length; i++) {
+            Sprite? s = sprites[i];
+            if (s is null || s.texture is null) {
+                continue;
+            }
+
+            any = true;
+            float extY = s.bounds.extents.y;
+            if (extY > halfLocal) {
+                halfLocal = extY;
+            }
+
+            float pad = MeasureBottomPaddingPx(s);
+            if (pad < minPadPx) {
+                minPadPx = pad;
+            }
+        }
+
+        if (!any || halfLocal <= 0f) {
+            CenterLiftCache[cacheKey] = 0f;
+            return 0f;
+        }
+
+        if (minPadPx == float.MaxValue) {
+            minPadPx = 0f;
+        }
+
+        float halfWorldY = halfLocal * scaleY;
+        float padWorldY = (minPadPx / PixelsPerUnit) * scaleY;
+        float lift = halfWorldY - padWorldY;
+        if (lift < 0f) {
+            lift = 0f;
+        }
+
+        // 与 CardActor PCC 的 (int)(v*100)*0.01 同网格，保证 base+lift 仍贴格
+        lift = (float)(int)(lift * 100f + 0.5f) * 0.01f;
+        CenterLiftCache[cacheKey] = lift;
+        return lift;
     }
 
     /// <summary>
